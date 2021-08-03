@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <DevEnvLoc>$(MSBuildThisFileDirectory)DevEnv.targets</DevEnvLoc>
+  </PropertyGroup>
+
+  <!-- This sets $(UnityManagedDir) -->
+  <Import Project="$(DevEnvLoc)" Condition="Exists('$(DevEnvLoc)')" />
+
+  <PropertyGroup Label="Unity Install Properties">
+    <UnityManagedDir Condition="!Exists('$(DevEnvLoc)')">$(UnityManagedDir)</UnityManagedDir>
+    <UnityManagedDir>$([MSBuild]::EnsureTrailingSlash('$(UnityManagedDir)'))</UnityManagedDir>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Common Properties">
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutDir>$(MSBuildThisFileDirectory)Output\$(Configuration)\</OutDir>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <DefaultItemExcludes>$(DefaultItemExcludes);*.binlog</DefaultItemExcludes>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+  </PropertyGroup>
+<ItemGroup Label="Unity Engine">
+     <Reference Include="$(UnityManagedDir)UnityEngine.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.CoreModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.UNETModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.IMGUIModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.Physics2DModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.PhysicsModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.AnimationModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.TextRenderingModule.dll" Private="false" SpecificVersion="true" />
+     <Reference Include="$(UnityManagedDir)UnityEngine.JSONSerializeModule.dll" Private="false" SpecificVersion="true" />
+</ItemGroup>
+</Project>

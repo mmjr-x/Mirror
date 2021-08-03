@@ -28,7 +28,6 @@ Source/Assembly-CSharp-firstpass.csproj
 Source/Source.sln
 *.pidb
 *.suo
-/*.sln
 *.user
 *.unityproj
 *.booproj
@@ -66,3 +65,4 @@ docs/.sass-cache
 ehthumbs.db
 Thumbs.db
 /VisRepo.txt
+DevEnv.targets

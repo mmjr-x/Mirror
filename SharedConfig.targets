@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"
+         InitialTargets="TestUnityManagedDir">
+
+  <Target Name="MaybeCopyDevEnv"
+          Inputs="$(MSBuildAllProjects)"
+          Outputs="$(DevEnvLoc)"
+          Condition="!Exists('$(DevEnvLoc)')">
+
+    <Copy SourceFiles="$(DevEnvLoc).example"
+          DestinationFiles="$(DevEnvLoc)"
+          SkipUnchangedFiles="true" />
+    <Error Text="It appears your Unity Engine Managed folder is not valid. Please set the path correctly in '$(DevEnvLoc)' (it has been created for you)." />
+  </Target>
+
+  <Target Name="DevEnvInvalid"
+          Condition="Exists('$(DevEnvLoc)')">
+    <!-- If the default path is overriden in DevEnv, and it doesn't exist -->
+    <Error Text="Your Unity Engine Managed folder has not been found at the path defined in '$(DevEnvLoc)'. Please set it correctly." />
+  </Target>
+
+  <!-- Using DependsOnTarget with Conditional targets as an if else structure... -->
+  <!-- Note that this is the first target, called by InitialTargets -->
+  <Target Name="TestUnityManagedDir"
+          DependsOnTargets="MaybeCopyDevEnv;DevEnvInvalid"
+          Condition="!Exists('$(UnityManagedDir)')" />
+</Project>
