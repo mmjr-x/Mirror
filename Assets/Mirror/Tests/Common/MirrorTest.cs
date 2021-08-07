@@ -48,11 +48,21 @@ namespace Mirror.Tests
         }
 
         // create a tracked GameObject for tests without Networkidentity
+        // add to tracker list if needed (useful for cleanups afterwards)
         protected void CreateGameObject(out GameObject go)
         {
             go = new GameObject();
             // track
             instantiated.Add(go);
+        }
+
+        // create GameObject + MonoBehaviour<T>
+        // add to tracker list if needed (useful for cleanups afterwards)
+        protected void CreateGameObject<T>(out GameObject go, out T component)
+            where T : MonoBehaviour
+        {
+            CreateGameObject(out go);
+            component = go.AddComponent<T>();
         }
 
         // create GameObject + NetworkIdentity
@@ -130,6 +140,21 @@ namespace Mirror.Tests
 
         // create GameObject + NetworkIdentity + NetworkBehaviour & SPAWN
         // => ownerConnection can be NetworkServer.localConnection if needed.
+        protected void CreateNetworkedAndSpawn(out GameObject go, out NetworkIdentity identity, NetworkConnection ownerConnection = null)
+        {
+            // server & client need to be active before spawning
+            Debug.Assert(NetworkClient.active, "NetworkClient needs to be active before spawning.");
+            Debug.Assert(NetworkServer.active, "NetworkServer needs to be active before spawning.");
+
+            CreateNetworked(out go, out identity);
+
+            // spawn
+            NetworkServer.Spawn(go, ownerConnection);
+            ProcessMessages();
+        }
+
+        // create GameObject + NetworkIdentity + NetworkBehaviour & SPAWN
+        // => ownerConnection can be NetworkServer.localConnection if needed.
         protected void CreateNetworkedAndSpawn<T>(out GameObject go, out NetworkIdentity identity, out T component, NetworkConnection ownerConnection = null)
             where T : NetworkBehaviour
         {
@@ -138,9 +163,6 @@ namespace Mirror.Tests
             Debug.Assert(NetworkServer.active, "NetworkServer needs to be active before spawning.");
 
             CreateNetworked(out go, out identity, out component);
-
-            // host mode object needs a connection to server for commands to work
-            identity.connectionToServer = NetworkClient.connection;
 
             // spawn
             NetworkServer.Spawn(go, ownerConnection);
