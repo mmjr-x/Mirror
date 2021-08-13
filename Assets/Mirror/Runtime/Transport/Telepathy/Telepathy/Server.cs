@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using WatsonTcp;
 
 namespace Telepathy
 {
@@ -16,7 +17,7 @@ namespace Telepathy
         public Action<int> OnDisconnected;
 
         // listener
-        public TcpListener listener;
+        public WatsonTcpServer listener;
         Thread listenerThread;
 
         // disconnect if send queue gets too big.
@@ -41,7 +42,7 @@ namespace Telepathy
         public int ReceivePipeTotalCount => receivePipe.TotalCount;
 
         // clients with <connectionId, ConnectionState>
-        readonly ConcurrentDictionary<int, ConnectionState> clients = new ConcurrentDictionary<int, ConnectionState>();
+        readonly ConcurrentDictionary<int, string> clients = new ConcurrentDictionary<int, string>();
 
         // connectionId counter
         int counter;
@@ -73,6 +74,100 @@ namespace Telepathy
         // constructor
         public Server(int MaxMessageSize) : base(MaxMessageSize) {}
 
+        private void ClientConnected(object sender, ConnectionEventArgs args)
+        {
+            Console.WriteLine("Client connected: " + args.IpPort);
+
+            // generate the next connection id (thread safely)
+            int connectionId = NextConnectionId();
+
+            // add to dict immediately
+            //ConnectionState connection = new ConnectionState(client, MaxMessageSize);
+            clients[connectionId] = args.IpPort;
+        }
+
+        private void StreamReceived(object sender, StreamReceivedEventArgs args)
+        {
+            Console.WriteLine("Client connected: " + args.IpPort);
+
+            int connectionId = -1;
+            foreach (KeyValuePair<int, string> pair in clients)
+            {
+                if (EqualityComparer<string>.Default.Equals(pair.Value, args.IpPort))
+                {
+                    connectionId = pair.Key;
+                    break;
+                }
+            }
+
+            Thread sendThread = new Thread(() =>
+            {
+                // wrap in try-catch, otherwise Thread exceptions
+                // are silent
+                try
+                {
+                    // run the send loop
+                    // IMPORTANT: DO NOT SHARE STATE ACROSS MULTIPLE THREADS!
+                    ThreadFunctions.SendLoop(connectionId, args.IpPort, new MagnificentSendPipe(MaxMessageSize), new ManualResetEvent(false), ref listener, args.DataStream);
+                }
+                catch (ThreadAbortException)
+                {
+                    // happens on stop. don't log anything.
+                    // (we catch it in SendLoop too, but it still gets
+                    //  through to here when aborting. don't show an
+                    //  error.)
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("Server send thread exception: " + exception);
+                }
+            });
+            sendThread.IsBackground = true;
+            sendThread.Start();
+
+            // spawn a receive thread for each client
+            Thread receiveThread = new Thread(() =>
+            {
+                // wrap in try-catch, otherwise Thread exceptions
+                // are silent
+                try
+                {
+                    // run the receive loop
+                    // (receive pipe is shared across all loops)
+                    ThreadFunctions.ReceiveLoop(connectionId, args.IpPort, MaxMessageSize, receivePipe, ReceiveQueueLimit, ref listener, args.DataStream);
+
+                    // IMPORTANT: do NOT remove from clients after the
+                    // thread ends. need to do it in Tick() so that the
+                    // disconnect event in the pipe is still processed.
+                    // (removing client immediately would mean that the
+                    //  pipe is lost and the disconnect event is never
+                    //  processed)
+
+                    // sendthread might be waiting on ManualResetEvent,
+                    // so let's make sure to end it if the connection
+                    // closed.
+                    // otherwise the send thread would only end if it's
+                    // actually sending data while the connection is
+                    // closed.
+                    sendThread.Interrupt();
+                }
+                catch (Exception exception)
+                {
+                    Log.Error("Server client thread exception: " + exception);
+                }
+            });
+            receiveThread.IsBackground = true;
+            receiveThread.Start();
+
+        }
+
+        
+
+        static void ClientDisconnected(object sender, DisconnectionEventArgs args)
+        {
+            Console.WriteLine("Client disconnected: " + args.IpPort + ": " + args.Reason.ToString());
+        }
+
         // the listener thread's listen function
         // note: no maxConnections parameter. high level API should handle that.
         //       (Transport can't send a 'too full' message anyway)
@@ -83,8 +178,9 @@ namespace Telepathy
             try
             {
                 // start listener on all IPv4 and IPv6 address via .Create
-                listener = TcpListener.Create(port);
-                listener.Server.NoDelay = NoDelay;
+                //listener = TcpListener.Create(port);
+                listener = new WatsonTcpServer(null, port);
+                //listener.Server.NoDelay = NoDelay;
                 // IMPORTANT: do not set send/receive timeouts on listener.
                 // On linux setting the recv timeout will cause the blocking 
                 // Accept call to timeout with EACCEPT (which mono interprets 
@@ -97,87 +193,91 @@ namespace Telepathy
                 listener.Start();
                 Log.Info("Server: listening port=" + port);
 
-                // keep accepting new clients
-                while (true)
-                {
-                    // wait and accept new client
-                    // note: 'using' sucks here because it will try to
-                    // dispose after thread was started but we still need it
-                    // in the thread
-                    TcpClient client = listener.AcceptTcpClient();
+                listener.Events.StreamReceived += StreamReceived;
+                listener.Events.ClientConnected += ClientConnected;
+                listener.Events.ClientDisconnected += ClientDisconnected;
 
-                    // set socket options
-                    client.NoDelay = NoDelay;
-                    client.SendTimeout = SendTimeout;
-                    client.ReceiveTimeout = ReceiveTimeout;
+                //// keep accepting new clients
+                //while (true)
+                //{
+                //    // wait and accept new client
+                //    // note: 'using' sucks here because it will try to
+                //    // dispose after thread was started but we still need it
+                //    // in the thread
+                //    WatsonTcpClient client = listener.AcceptTcpClient();
 
-                    // generate the next connection id (thread safely)
-                    int connectionId = NextConnectionId();
+                //    // set socket options
+                //    //client.NoDelay = NoDelay;
+                //    //client.SendTimeout = SendTimeout;
+                //    //client.ReceiveTimeout = ReceiveTimeout;
 
-                    // add to dict immediately
-                    ConnectionState connection = new ConnectionState(client, MaxMessageSize);
-                    clients[connectionId] = connection;
+                //    // generate the next connection id (thread safely)
+                //    int connectionId = NextConnectionId();
 
-                    // spawn a send thread for each client
-                    Thread sendThread = new Thread(() =>
-                    {
-                        // wrap in try-catch, otherwise Thread exceptions
-                        // are silent
-                        try
-                        {
-                            // run the send loop
-                            // IMPORTANT: DO NOT SHARE STATE ACROSS MULTIPLE THREADS!
-                            ThreadFunctions.SendLoop(connectionId, client, connection.sendPipe, connection.sendPending);
-                        }
-                        catch (ThreadAbortException)
-                        {
-                            // happens on stop. don't log anything.
-                            // (we catch it in SendLoop too, but it still gets
-                            //  through to here when aborting. don't show an
-                            //  error.)
-                        }
-                        catch (Exception exception)
-                        {
-                            Log.Error("Server send thread exception: " + exception);
-                        }
-                    });
-                    sendThread.IsBackground = true;
-                    sendThread.Start();
+                //    // add to dict immediately
+                //    ConnectionState connection = new ConnectionState(client, MaxMessageSize);
+                //    clients[connectionId] = connection;
 
-                    // spawn a receive thread for each client
-                    Thread receiveThread = new Thread(() =>
-                    {
-                        // wrap in try-catch, otherwise Thread exceptions
-                        // are silent
-                        try
-                        {
-                            // run the receive loop
-                            // (receive pipe is shared across all loops)
-                            ThreadFunctions.ReceiveLoop(connectionId, client, MaxMessageSize, receivePipe, ReceiveQueueLimit);
+                //    // spawn a send thread for each client
+                //    Thread sendThread = new Thread(() =>
+                //    {
+                //        // wrap in try-catch, otherwise Thread exceptions
+                //        // are silent
+                //        try
+                //        {
+                //            // run the send loop
+                //            // IMPORTANT: DO NOT SHARE STATE ACROSS MULTIPLE THREADS!
+                //            ThreadFunctions.SendLoop(connectionId, client, connection.sendPipe, connection.sendPending, connection);
+                //        }
+                //        catch (ThreadAbortException)
+                //        {
+                //            // happens on stop. don't log anything.
+                //            // (we catch it in SendLoop too, but it still gets
+                //            //  through to here when aborting. don't show an
+                //            //  error.)
+                //        }
+                //        catch (Exception exception)
+                //        {
+                //            Log.Error("Server send thread exception: " + exception);
+                //        }
+                //    });
+                //    sendThread.IsBackground = true;
+                //    sendThread.Start();
 
-                            // IMPORTANT: do NOT remove from clients after the
-                            // thread ends. need to do it in Tick() so that the
-                            // disconnect event in the pipe is still processed.
-                            // (removing client immediately would mean that the
-                            //  pipe is lost and the disconnect event is never
-                            //  processed)
+                //    // spawn a receive thread for each client
+                //    Thread receiveThread = new Thread(() =>
+                //    {
+                //        // wrap in try-catch, otherwise Thread exceptions
+                //        // are silent
+                //        try
+                //        {
+                //            // run the receive loop
+                //            // (receive pipe is shared across all loops)
+                //            ThreadFunctions.ReceiveLoop(connectionId, client, MaxMessageSize, receivePipe, ReceiveQueueLimit, connection);
 
-                            // sendthread might be waiting on ManualResetEvent,
-                            // so let's make sure to end it if the connection
-                            // closed.
-                            // otherwise the send thread would only end if it's
-                            // actually sending data while the connection is
-                            // closed.
-                            sendThread.Interrupt();
-                        }
-                        catch (Exception exception)
-                        {
-                            Log.Error("Server client thread exception: " + exception);
-                        }
-                    });
-                    receiveThread.IsBackground = true;
-                    receiveThread.Start();
-                }
+                //            // IMPORTANT: do NOT remove from clients after the
+                //            // thread ends. need to do it in Tick() so that the
+                //            // disconnect event in the pipe is still processed.
+                //            // (removing client immediately would mean that the
+                //            //  pipe is lost and the disconnect event is never
+                //            //  processed)
+
+                //            // sendthread might be waiting on ManualResetEvent,
+                //            // so let's make sure to end it if the connection
+                //            // closed.
+                //            // otherwise the send thread would only end if it's
+                //            // actually sending data while the connection is
+                //            // closed.
+                //            sendThread.Interrupt();
+                //        }
+                //        catch (Exception exception)
+                //        {
+                //            Log.Error("Server client thread exception: " + exception);
+                //        }
+                //    });
+                //    receiveThread.IsBackground = true;
+                //    receiveThread.Start();
+                //}
             }
             catch (ThreadAbortException exception)
             {
@@ -230,6 +330,8 @@ namespace Telepathy
 
             Log.Info("Server: stopping...");
 
+            listener.DisconnectClients();
+
             // stop listening to connections so that no one can connect while we
             // close the client connections
             // (might be null if we call Stop so quickly after Start that the
@@ -243,14 +345,14 @@ namespace Telepathy
             listenerThread = null;
 
             // close all client connections
-            foreach (KeyValuePair<int, ConnectionState> kvp in clients)
-            {
-                TcpClient client = kvp.Value.client;
-                // close the stream if not closed yet. it may have been closed
-                // by a disconnect already, so use try/catch
-                try { client.GetStream().Close(); } catch {}
-                client.Close();
-            }
+            //foreach (KeyValuePair<int, ConnectionState> kvp in clients)
+            //{
+            //    TcpClient client = kvp.Value.client;
+            //    // close the stream if not closed yet. it may have been closed
+            //    // by a disconnect already, so use try/catch
+            //    try { client.GetStream().Close(); } catch {}
+            //    client.Close();
+            //}
 
             // clear clients list
             clients.Clear();
@@ -269,38 +371,39 @@ namespace Telepathy
             if (message.Count <= MaxMessageSize)
             {
                 // find the connection
-                if (clients.TryGetValue(connectionId, out ConnectionState connection))
+                if (clients.TryGetValue(connectionId, out string connection))
                 {
-                    // check send pipe limit
-                    if (connection.sendPipe.Count < SendQueueLimit)
-                    {
-                        // add to thread safe send pipe and return immediately.
-                        // calling Send here would be blocking (sometimes for long
-                        // times if other side lags or wire was disconnected)
-                        connection.sendPipe.Enqueue(message);
-                        connection.sendPending.Set(); // interrupt SendThread WaitOne()
-                        return true;
-                    }
-                    // disconnect if send queue gets too big.
-                    // -> avoids ever growing queue memory if network is slower
-                    //    than input
-                    // -> disconnecting is great for load balancing. better to
-                    //    disconnect one connection than risking every
-                    //    connection / the whole server
-                    //
-                    // note: while SendThread always grabs the WHOLE send queue
-                    //       immediately, it's still possible that the sending
-                    //       blocks for so long that the send queue just gets
-                    //       way too big. have a limit - better safe than sorry.
-                    else
-                    {
-                        // log the reason
-                        Log.Warning($"Server.Send: sendPipe for connection {connectionId} reached limit of {SendQueueLimit}. This can happen if we call send faster than the network can process messages. Disconnecting this connection for load balancing.");
+                    listener.Send(connection, message.Array);
+                    //// check send pipe limit
+                    //if (connection.sendPipe.Count < SendQueueLimit)
+                    //{
+                    //    // add to thread safe send pipe and return immediately.
+                    //    // calling Send here would be blocking (sometimes for long
+                    //    // times if other side lags or wire was disconnected)
+                    //    connection.sendPipe.Enqueue(message);
+                    //    connection.sendPending.Set(); // interrupt SendThread WaitOne()
+                    //    return true;
+                    //}
+                    //// disconnect if send queue gets too big.
+                    //// -> avoids ever growing queue memory if network is slower
+                    ////    than input
+                    //// -> disconnecting is great for load balancing. better to
+                    ////    disconnect one connection than risking every
+                    ////    connection / the whole server
+                    ////
+                    //// note: while SendThread always grabs the WHOLE send queue
+                    ////       immediately, it's still possible that the sending
+                    ////       blocks for so long that the send queue just gets
+                    ////       way too big. have a limit - better safe than sorry.
+                    //else
+                    //{
+                    //    // log the reason
+                    //    Log.Warning($"Server.Send: sendPipe for connection {connectionId} reached limit of {SendQueueLimit}. This can happen if we call send faster than the network can process messages. Disconnecting this connection for load balancing.");
 
-                        // just close it. send thread will take care of the rest.
-                        connection.client.Close();
-                        return false;
-                    }
+                    //    // just close it. send thread will take care of the rest.
+                    //    connection.client.Close();
+                    //    return false;
+                    //}
                 }
 
                 // sending to an invalid connectionId is expected sometimes.
@@ -319,9 +422,10 @@ namespace Telepathy
         public string GetClientAddress(int connectionId)
         {
             // find the connection
-            if (clients.TryGetValue(connectionId, out ConnectionState connection))
+            if (clients.TryGetValue(connectionId, out string connection))
             {
-                return ((IPEndPoint)connection.client.Client.RemoteEndPoint).Address.ToString();
+                //return ((IPEndPoint)connection.client.Client.RemoteEndPoint).Address.ToString();
+                return connection;
             }
             return "";
         }
@@ -330,10 +434,11 @@ namespace Telepathy
         public bool Disconnect(int connectionId)
         {
             // find the connection
-            if (clients.TryGetValue(connectionId, out ConnectionState connection))
+            if (clients.TryGetValue(connectionId, out string connection))
             {
                 // just close it. send thread will take care of the rest.
-                connection.client.Close();
+                //connection.client.Close();
+                listener.DisconnectClient(connection);
                 Log.Info("Server.Disconnect connectionId:" + connectionId);
                 return true;
             }
@@ -382,7 +487,7 @@ namespace Telepathy
                             OnDisconnected?.Invoke(connectionId);
                             // remove disconnected connection now that the final
                             // disconnected message was processed.
-                            clients.TryRemove(connectionId, out ConnectionState _);
+                            clients.TryRemove(connectionId, out string _);
                             break;
                     }
 

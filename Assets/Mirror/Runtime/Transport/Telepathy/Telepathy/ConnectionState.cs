@@ -6,14 +6,17 @@
 //    (fixes all the flaky tests)
 //
 // ... besides, it also allows us to share code!
+using System.IO;
 using System.Net.Sockets;
 using System.Threading;
+using WatsonTcp;
 
 namespace Telepathy
 {
     public class ConnectionState
     {
-        public TcpClient client;
+        public WatsonTcpClient client;
+        public Stream stream;
 
         // thread safe pipe to send messages from main thread to send thread
         public readonly MagnificentSendPipe sendPipe;
@@ -24,12 +27,18 @@ namespace Telepathy
         // -> call WaitOne() to block until Reset was called
         public ManualResetEvent sendPending = new ManualResetEvent(false);
 
-        public ConnectionState(TcpClient client, int MaxMessageSize)
+        public ConnectionState(WatsonTcpClient client, int MaxMessageSize)
         {
             this.client = client;
+            client.Events.StreamReceived += StreamReceived;
 
             // create send pipe with max message size for pooling
             sendPipe = new MagnificentSendPipe(MaxMessageSize);
+        }
+
+        private void StreamReceived(object sender, StreamReceivedEventArgs args)
+        {
+            stream = args.DataStream;
         }
     }
 }

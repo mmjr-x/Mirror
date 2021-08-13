@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Net.Sockets;
 using System.Threading;
+using WatsonTcp;
 
 namespace Telepathy
 {
@@ -19,9 +20,11 @@ namespace Telepathy
         // TcpClient.Connected doesn't check if socket != null, which
         // results in NullReferenceExceptions if connection was closed.
         // -> let's check it manually instead
+        //public bool Connected => client != null &&
+        //                         client.Client != null &&
+        //                         client.Client.Connected;
         public bool Connected => client != null &&
-                                 client.Client != null &&
-                                 client.Client.Connected;
+                                 client.Connected;
 
         // TcpClient has no 'connecting' state to check. We need to keep track
         // of it manually.
@@ -44,7 +47,7 @@ namespace Telepathy
         public readonly MagnificentReceivePipe receivePipe;
 
         // constructor always creates new TcpClient for client connection!
-        public ClientConnectionState(int MaxMessageSize) : base(new TcpClient(), MaxMessageSize)
+        public ClientConnectionState(int MaxMessageSize, string serverIp, int serverPort) : base(new WatsonTcpClient(serverIp, serverPort), MaxMessageSize)
         {
             // create receive pipe with max message size for pooling
             receivePipe = new MagnificentReceivePipe(MaxMessageSize);
@@ -54,7 +57,8 @@ namespace Telepathy
         public void Dispose()
         {
             // close client
-            client.Close();
+            //client.Close();
+            client.Disconnect();
 
             // wait until thread finished. this is the only way to guarantee
             // that we can call Connect() again immediately after Disconnect
@@ -130,24 +134,25 @@ namespace Telepathy
             try
             {
                 // connect (blocking)
-                state.client.Connect(ip, port);
+                //state.client.Connect(ip, port);
+                state.client.Connect();
                 state.Connecting = false; // volatile!
 
                 // set socket options after the socket was created in Connect()
                 // (not after the constructor because we clear the socket there)
-                state.client.NoDelay = NoDelay;
-                state.client.SendTimeout = SendTimeout;
-                state.client.ReceiveTimeout = ReceiveTimeout;
+                //state.client.NoDelay = NoDelay;
+                //state.client.SendTimeout = SendTimeout;
+                //state.client.ReceiveTimeout = ReceiveTimeout;
 
                 // start send thread only after connected
                 // IMPORTANT: DO NOT SHARE STATE ACROSS MULTIPLE THREADS!
-                sendThread = new Thread(() => { ThreadFunctions.SendLoop(0, state.client, state.sendPipe, state.sendPending); });
+                sendThread = new Thread(() => { ThreadFunctions.SendLoop(0, state.client, state.sendPipe, state.sendPending, state); });
                 sendThread.IsBackground = true;
                 sendThread.Start();
 
                 // run the receive loop
                 // (receive pipe is shared across all loops)
-                ThreadFunctions.ReceiveLoop(0, state.client, MaxMessageSize, state.receivePipe, ReceiveQueueLimit);
+                ThreadFunctions.ReceiveLoop(0, state.client, MaxMessageSize, state.receivePipe, ReceiveQueueLimit, state);
             }
             catch (SocketException exception)
             {
@@ -193,7 +198,9 @@ namespace Telepathy
             // if we got here then we are done. ReceiveLoop cleans up already,
             // but we may never get there if connect fails. so let's clean up
             // here too.
-            state.client?.Close();
+            //state.client?.Close();
+            state.client?.Disconnect();
+            //state.stream?.Close();
         }
 
         public void Connect(string ip, int port)
@@ -208,7 +215,7 @@ namespace Telepathy
             // overwrite old thread's state object. create a new one to avoid
             // data races where an old dieing thread might still modify the
             // current state! fixes all the flaky tests!
-            state = new ClientConnectionState(MaxMessageSize);
+            state = new ClientConnectionState(MaxMessageSize, ip, port);
 
             // We are connecting from now until Connect succeeds or fails
             state.Connecting = true;
@@ -228,7 +235,7 @@ namespace Telepathy
             // => the trick is to clear the internal IPv4 socket so that Connect
             //    resolves the hostname and creates either an IPv4 or an IPv6
             //    socket as needed (see TcpClient source)
-            state.client.Client = null; // clear internal IPv4 socket until Connect()
+            //state.client.Client = null; // clear internal IPv4 socket until Connect()
 
             // client.Connect(ip, port) is blocking. let's call it in the thread
             // and return immediately.
@@ -291,7 +298,9 @@ namespace Telepathy
                         Log.Warning($"Client.Send: sendPipe reached limit of {SendQueueLimit}. This can happen if we call send faster than the network can process messages. Disconnecting to avoid ever growing memory & latency.");
 
                         // just close it. send thread will take care of the rest.
-                        state.client.Close();
+                        //state.client.Close();
+                        state.client.Disconnect();
+                        //state.stream.Close();
                         return false;
                     }
                 }

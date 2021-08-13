@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="WatsonTcp" Version="4.8.10" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\Mirror.csproj" />
   </ItemGroup>
 </Project>
